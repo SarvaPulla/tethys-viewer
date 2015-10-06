@@ -1,0 +1,2 @@
+tethysapp
+tethysapp.hydroshare_shapefile_viewer

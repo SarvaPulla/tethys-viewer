@@ -1,0 +1,25 @@
+{% extends "hydroshare_shapefile_viewer/base.html" %}
+
+{% block app_content %}
+  <h1>Welcome to the HydroShare Shapefile Viewer!</h1>
+  <br/>
+  <br/>
+
+  	<form method="post" action="map/" enctype="multipart/form-date" class="form-horizontal" role="form">
+	{% csrf_token %}
+	<p><label class="control-label col-sm-2" for="filename">Filename: </label>
+	<input id="filename" type="text" name="filename"></p>
+	<p><label class="control-label col-sm-2" for="branch">Branch: </label>
+	<input id="branch" type="text" name="branch"></p>
+	<p><label class="control-label col-sm-2" for="resource_id">Resource Id:</label>
+	<input id="resource_id" type="text" name="resource_id"></p>
+	<br/>	
+	<br/>
+
+	<div class=col-sm-offset-2 col-sm-10">
+	<input type="submit" value="VIEW SHAPEFILE!" name="submit" class="btn btn-default" />
+	</div>
+
+
+{% endblock %}
+

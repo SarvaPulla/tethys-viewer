@@ -1,0 +1,19 @@
+{% extends "hydroshare_shapefile_viewer/base.html" %}
+
+
+{% load tethys_gizmos %}
+
+{% block app_navigation_items %}
+  <li><a href="{% url 'hydroshare_shapefile_viewer:home' %}">Home</a></li>
+  <li class="active"><a href="{% url 'hydroshare_shapefile_viewer:map' %}">View Shapefile</a></li>
+{% endblock %}
+
+{% block app_content %}
+	<h1>Uploaded Shapefile</h1>
+
+	{% gizmo map_view map_options %}
+{% endblock %}
+
+
+{% block app_actions %}
+{% endblock %}
