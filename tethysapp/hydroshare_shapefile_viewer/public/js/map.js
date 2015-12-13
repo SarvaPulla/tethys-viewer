@@ -149,8 +149,7 @@ map.getView().on('change:resolution', function(evt) {
           scale = Math.round(scale);
         }
 
-        var extent = map.getView().calculateExtent(map.getSize())
-        document.getElementById('scale').innerHTML = "Scale = 1 : " + scale + "extent:" + extent;
+        document.getElementById('scale').innerHTML = "Scale = 1 : " + scale;
       });
 
 
