@@ -1,188 +1,289 @@
-import random,string,tempfile,shutil,os
 from django.shortcuts import render
+from django.http import Http404
 import urllib2
-import zipfile
-try:
-    from cStringIO import StringIO
-except ImportError:
-    from io import BytesIO as StringIO
-from django.shortcuts import render
-from django.contrib.sites.shortcuts import get_current_site
+#from tethys_apps.base import TethysAppBase, SpatialDatasetService
 from tethys_dataset_services.engines import GeoServerSpatialDatasetEngine
-from django.core.urlresolvers import reverse
+import zipfile
+from oauthlib.oauth2 import TokenExpiredError
+from hs_restclient import HydroShare, HydroShareAuthOAuth2, HydroShareNotAuthorized, HydroShareNotFound
+from django.core.exceptions import ObjectDoesNotExist
+from django.contrib.auth.decorators import login_required
+from social_auth.models import UserSocialAuth
+from django.conf import settings
 from django.http import JsonResponse
+
+
+import tempfile
+import shutil
+import os
+from django.contrib.sites.shortcuts import get_current_site
 from utilities import *
-from django.template.defaulttags import csrf_token
-from tethys_sdk.services import *
-from tethys_sdk.services import get_spatial_dataset_engine
-from tethys_sdk.gizmos import MapView, MVDraw, MVView, MVLayer, MVLegendClass
-from tethys_sdk.gizmos import SelectInput
 
+###########
+geosvr_url_base = getattr(settings, "GEOSERVER_URL_BASE", "http://127.0.0.1:8181")
+geosvr_user = getattr(settings, "GEOSERVER_USER_NAME", "admin")
+geosvr_pw = getattr(settings, "GEOSERVER_USER_PASSWORD", "geoserver")
 
+hs_instance_name = "www"
+target_res_type = "geographicfeatureresource"
 
-url_base='http://{0}.hydroshare.org/hsapi/resource/{1}/files/{2}/'
+hs_hostname = "{0}.hydroshare.org".format(hs_instance_name)
+wsName = hs_hostname
 
-# Default Geoserver Url
-geosvr_url_base='http://127.0.0.1:8181'
+###########
+popup_title_WELCOME = "Welcome to the HydroShare Geographic Feature Viewer"
+popup_title_ERROR = "Error"
+popup_title_WARNING = "Warning"
 
+popup_content_NOT_LAUNCHED_FROM_HYDROSHARE = "This app should be launched from <a href='https://{0}.hydroshare.org/my-resources/'>HydroShare</a>.".format(hs_instance_name)
+popup_content_UNKNOWN_ERROR = "Sorry, we are having an internal error!"
+popup_content_NO_PERMISSION = "Sorry, you have no permission on this resource."
+popup_content_NOT_FOUND = "Sorry, we cannot find this resource on HydroShare."
+popup_content_ANONYMOUS_USER = "Please <a href='https://{0}.hydroshare.org/accounts/login/'>sign in HydroShare</a> and then launch this app again.".format(hs_instance_name)
+popup_content_TOKEN_EXPIRED = "Login timed out! Please <a href='/oauth2/login/hydroshare'>sign in with your HydroShare account</a> again."
+popup_content_NOT_OAUTH_LOGIN = "Please sign out and re-sign in with your HydroShare account."
+popup_content_NOT_GEOG_FEATURE_RESOURCE = "Sorry, this resource is not a HydroShare Geographic Feature Resource."
+popup_content_NO_RESOURCEID_IN_SESSION = "Sorry, the resource id is missing."
+popup_content_INVALID_GEOTIFF = "This resource file is not a valid ESRI Shapefile or has no projection information."
+
+extract_base_path = '/tmp'
+
+#Normal Get or Post Request
+#http://dev.hydroshare.org/hsapi/resource/72b1d67d415b4d949293b1e46d02367d/files/referencetimeseries-2_23_2015-wml_2_0.wml/
+
+# geotiff Name: geotiff.tif
+# zip File Name: zipFile.zip
+# workspace Name: ws
+# storeName: store
+# store_id="ws:store"
+#
+# spatial_dataset_engine.create_coverage_resource(store_id=store_id, coverage_file=zipFile.zip, coverage_type='geotiff')
+#
+# Create 1:
+# /var/lib/geoserver/data/data/ws/store/geotiff.tif
+#
+# Create 2:
+# /var/lib/geoserver/data/workspaces/ws/store/coveragestore.xml
+# /var/lib/geoserver/data/workspaces/ws/store/geotiff/coverage.xml
+# /var/lib/geoserver/data/workspaces/ws/store/geotiff/layer.xml
+#
+# Create 3:
+# geoserver layer resource name: geotiff
+#
+# Conclusion:
+# 1)Zip file name 'zipFile.zip' does not matter.But the embed tif file name (without extension) 'geotiffwill' be used for Layer Name.
+# 2)Store name 'store' should be unique in one workspace. Ex. same store names with different zipfile or geotif cannot cannot be used for creating new layer resource
+
+@login_required()
 def home(request):
-    """
-    Controller for the app home page.
-    """
 
-    geoserver_engine = get_spatial_dataset_engine(name='default_geoserver')
-    response = geoserver_engine.list_workspaces()
+    # import sys
+    # sys.path.append("/home/drew/pycharm-debug")
+    # import pydevd
+    # pydevd.settrace('172.17.42.1', port=21000, suspend=False)
 
 
-    context = {}
+    popup_title = popup_title_WELCOME
+    popup_content = popup_content_NOT_LAUNCHED_FROM_HYDROSHARE
+    success_flag = "true"
+    resource_title = None
+
+    if request.GET:
+        res_id = request.GET.get("res_id", None)
+        src = request.GET.get('src', None)
+        usr = request.GET.get('usr', None)
+
+        if res_id is None or src is None or src != "hs" or usr is None:
+            success_flag = "welcome"
+        elif usr.lower() == "anonymous":
+            popup_title = popup_title_ERROR
+            popup_content = popup_content_ANONYMOUS_USER
+            success_flag = "false"
+        else:
+            request.session['res_id'] = res_id
+            request.session['src'] = src
+            request.session['usr'] = usr
+            try:
+                # res_id = "b7822782896143ca8712395f6814c44b"
+                # res_id = "877bf9ed9e66468cadddb229838a9ced"
+                # res_id = "e660640a7b084794aa2d70dc77cfa67b"
+                # private res
+                # res_id = "a4a4bca8369e4c1e88a1b35b9487e731"
+                # request.session['res_id'] = res_id
+
+                hs = getOAuthHS(request)
+                res_landing_page = "https://{0}.hydroshare.org/resource/{1}/".format(hs_instance_name, res_id)
+                resource_md = hs.getSystemMetadata(res_id)
+                resource_type = resource_md.get("resource_type", "")
+                resource_title = resource_md.get("resource_title", "")
+
+                if resource_type.lower() != target_res_type:
+                    popup_title = popup_title_ERROR
+                    popup_content = popup_content_NOT_GEOG_FEATURE_RESOURCE
+                    success_flag = "false"
+                    print resource_type.lower()
+                    #raise Http404("Not RasterResource")
+            except ObjectDoesNotExist as e:
+                print str(e)
+                popup_title = popup_title_ERROR
+                popup_content = popup_content_NOT_OAUTH_LOGIN
+                success_flag = "false"
+            except TokenExpiredError as e:
+                print str(e)
+                popup_title = popup_title_WARNING
+                popup_content = popup_content_TOKEN_EXPIRED
+                success_flag = "false"
+                # raise Http404("Token Expired")
+            except HydroShareNotAuthorized as e:
+                print str(e)
+                popup_title = popup_title_ERROR
+                popup_content = popup_content_NO_PERMISSION
+                success_flag = "false"
+                # raise Http404("Your have no permission on this resource")
+            except HydroShareNotFound as e:
+                print str(e)
+                popup_title = popup_title_ERROR
+                popup_content = popup_content_NOT_FOUND
+                success_flag = "false"
+            except Exception as e:
+                print str(e)
+                popup_title = popup_title_ERROR
+                popup_content = popup_content_UNKNOWN_ERROR
+                success_flag = "false"
+                # raise
+    else:
+        success_flag = "welcome"
+
+    context = {"popup_title": popup_title,
+               "popup_content": popup_content,
+               "success_flag": success_flag,
+               'resource_title': resource_title,
+            }
 
     return render(request, 'hydroshare_shapefile_viewer/home.html', context)
 
-def map(request):
-    """
-    Controller for the map page
-    """
- # Getting all the necessary variables for initiating the process of adding a file to the Geoserver
 
-    """
-    Controller for the map page
+def getOAuthHS(request):
 
-    """
+    client_id = getattr(settings, "SOCIAL_AUTH_HYDROSHARE_KEY", None)
+    client_secret = getattr(settings, "SOCIAL_AUTH_HYDROSHARE_SECRET", None)
+
+    # this line will throw out from django.core.exceptions.ObjectDoesNotExist if current user is not signed in via HydroShare OAuth
+    token = request.user.social_auth.get(provider='hydroshare').extra_data['token_dict']
+
+    auth = HydroShareAuthOAuth2(client_id, client_secret, token=token)
+    hs = HydroShare(auth=auth, hostname=hs_hostname)
+    return hs
+
+def draw_geog_feature(request):
+
+    res_id = request.session.get("res_id", None)
+    temp_res_extracted_dir = None
+    temp_dir = None
+    map_dict = {}
+    map_dict["success"] = False
+    band_stat_info_array = []
+
     try:
-        filename= request.POST['filename']
-        res_id= request.POST['resource_id']
-        branch= request.POST['branch']
+        if res_id is not None:
 
-        WORKSPACE = ''.join(random.choice(string.ascii_lowercase + string.digits) for _ in range(6))
-        GEOSERVER_URI = ''.join(random.choice(string.ascii_lowercase + string.digits) for _ in range(6))
+            map_dict = getMapParas(geosvr_url_base=geosvr_url_base, wsName=wsName, store_id=res_id, \
+                        layerName=res_id, un=geosvr_user, pw=geosvr_pw)
 
+            if map_dict["success"]: # find cached raster
+               print "find cached layer on geoserver"
 
-        geoserver_engine = get_spatial_dataset_engine(name='default_geoserver')
-        response = geoserver_engine.list_workspaces()
+            else: # no cached raster or raster has no projection
 
-        if response['success']:
-            workspaces = response['result']
-
-            if WORKSPACE not in workspaces:
-                response = geoserver_engine.create_workspace(workspace_id=WORKSPACE,
-                                                             uri=GEOSERVER_URI)
-                print response
-
-
-
-
-         # make a temp directory
-        temp_dir = tempfile.mkdtemp()
-        print "temp folder created at " + temp_dir
-
-        # The url format for identifying the HydroShare resource file
-        url_wml = url_base.format(branch,res_id,filename)
-        print "HS_REST_API: " + url_wml
-
-         # Opening the url
-
-        response = urllib2.urlopen(url_wml)
-        print "downloading " + url_wml
-        shp_obj = response.read()
-        print "download complete"
-
-        # Downloading the file from HydroShare and then adding it to the temp dir
-        zipped_shp_full_path = temp_dir + "/"+ filename
-        # Saving the zip file to the temp dir
-        f = file(zipped_shp_full_path, "w")
-        # Writes the mem space 'in_memory_zip' to a file.
-        f.write(shp_obj)
-        f.close()
-
-        zip_crc=None
-
-        # Unzipping the file as adding a shpfile to Geosrvr requires you to upload a shpfile only
-        # This is a problem with the tethys functionality. Once that is fixed, this step will not be necessary
-        with zipfile.ZipFile(zipped_shp_full_path, "r") as z:
-            z.extractall(temp_dir)
-            #zip_info = z.getinfo(filename[:-3]+'shp')
-            #zip_crc1 = str(zip_info.CRC)
-            #print "CRC: " + zip_crc1
-            #zip_crc=zip_crc1
-
-        print geosvr_url_base
-
-        # Specifying the folder with the shapefiles. It is formatted this way for tethys' sake. filname[:-4] removes
-        # everything .zip
-        #zip_file_full_path= temp_dir + '/'+filename[:-4]
-        zip_file_full_path= temp_dir + '/'+filename
-
-        store = ''.join(random.choice(string.ascii_lowercase + string.digits) for _ in range(6))
-        store_id = WORKSPACE + ':' + store
-        response2 = geoserver_engine.create_shapefile_resource(
-                        store_id=store_id,
-                        shapefile_zip=zip_file_full_path,
-                        overwrite=True,
-                        debug=True
-            )
-
-        print response2
-
-        response3 = geoserver_engine.list_layers(with_properties=True)
-
-        options  =[]
-
-        if response3['success']:
-            for layer in response3['result']:
-                resource_name = layer['resource']
-                if WORKSPACE in resource_name:
-                    options.append((resource_name, resource_name))
-
-        map_layers = []
+                hs = getOAuthHS(request)
+                print ("Begin download res: {0}".format(res_id))
+                hs.getResource(res_id, destination=extract_base_path, unzip=True)
+                print ("End download res")
+                temp_res_extracted_dir = extract_base_path + '/' + res_id
+                print temp_res_extracted_dir
+                contents_folder = extract_base_path + '/' + res_id + '/' + res_id +'/data/contents/'
+                print contents_folder
+                file_list = os.listdir(contents_folder)
 
 
-        geoserver_layer = MVLayer(
-            source='ImageWMS',
-            options={'url': 'http://127.0.0.1:8181/geoserver/wms',
-                   'params': {'LAYERS': options},
-                   'serverType': 'geoserver'},
-            legend_title=filename,
-            legend_extent=[-114, 36.5, -109, 42.5],
-            legend_classes=[
-                MVLegendClass('polygon', 'County', fill='#999999'),
-        ])
+                for fn in file_list:
+                    print fn
 
-        map_layers.append(geoserver_layer)
+                temp_dir = tempfile.mkdtemp()
+                zip_file_full_path = temp_dir + "/" + "zip_shapefile.zip"
 
-
-        view_options = MVView(
-            projection='EPSG:4326',
-            center=[-100, 40],
-            zoom=4,
-            maxZoom=18,
-            minZoom=2
-        )
-
-        map_options = MapView(height='500px',
-                              width='100%',
-                              layers=map_layers,
-                              legend=True,
-                              view=view_options)
-    except:
-        raise Http404("Cannot locate the requested shapefile. Please check your URL and try again.")
+                with zipfile.ZipFile(zip_file_full_path, 'a') as myzip:
+                    for fn in file_list:
+                        shapefile_fp = contents_folder + fn # tif full path
+                        new_file_name = res_id + os.path.splitext(fn)[1]
+                        myzip.write(shapefile_fp, arcname=new_file_name)
 
 
+                rslt = addZippedShapefile2Geoserver(geosvr_url_base=geosvr_url_base, uname=geosvr_user, upwd=geosvr_pw, ws_name=wsName, \
+                                              store_name=res_id, zippedTif_full_path=zip_file_full_path, res_url=hs_hostname + "/"  + target_res_type)
+                if(rslt):
+                    map_dict = getMapParas(geosvr_url_base=geosvr_url_base, wsName=wsName, store_id=res_id, \
+                                                   layerName=res_id, un=geosvr_user, pw=geosvr_pw)
+
+            map_dict['geosvr_url_base'] = geosvr_url_base
+            map_dict['ws_name'] = wsName
+            map_dict['store_name'] = res_id
+            map_dict['layer_name'] = res_id
+            if map_dict["success"] == False:
+                map_dict['popup_title'] = popup_title_ERROR
+                map_dict['popup_content'] = popup_content_INVALID_GEOTIFF
+
+        else:
+            map_dict["success"] = False
+            map_dict['popup_title'] = popup_title_ERROR
+            map_dict['popup_content'] = popup_content_NO_RESOURCEID_IN_SESSION
+
+
+    except ObjectDoesNotExist as e:
+        print str(e)
+        popup_title = popup_title_ERROR
+        popup_content = popup_content_NOT_OAUTH_LOGIN
+        map_dict["success"] = False
+        map_dict['popup_title'] = popup_title
+        map_dict['popup_content'] = popup_content
+    except TokenExpiredError as e:
+        print str(e)
+        popup_title = popup_title_WARNING
+        popup_content = popup_content_TOKEN_EXPIRED
+        map_dict["success"] = False
+        map_dict['popup_title'] = popup_title
+        map_dict['popup_content'] = popup_content
+        # raise Http404("Token Expired")
+    except HydroShareNotAuthorized as e:
+        print str(e)
+        popup_title = popup_title_ERROR
+        popup_content = popup_content_NO_PERMISSION
+        map_dict["success"] = False
+        map_dict['popup_title'] = popup_title
+        map_dict['popup_content'] = popup_content
+        # raise Http404("Your have no permission on this resource")
+    except HydroShareNotFound as e:
+        print str(e)
+        popup_title = popup_title_ERROR
+        popup_content = popup_content_NOT_FOUND
+        map_dict["success"] = False
+        map_dict['popup_title'] = popup_title
+        map_dict['popup_content'] = popup_content
+    except Exception as e:
+        print str(e)
+        popup_title = popup_title_ERROR
+        popup_content = popup_content_UNKNOWN_ERROR
+        map_dict["success"] = False
+        map_dict['popup_title'] = popup_title
+        map_dict['popup_content'] = popup_content
+        # raise
     finally:
-        if os.path.exists(temp_dir):
+        if temp_dir is not None:
+            if os.path.exists(temp_dir):
                 shutil.rmtree(temp_dir)
-                temp_dir=None
-
-
-
-
-    context = {'map_options': map_options}
-
-
-
-
-    return render(request, 'hydroshare_shapefile_viewer/map.html', context)
-
-
-
-
-
+                print temp_dir + " deleted"
+        if temp_res_extracted_dir is not None:
+            if os.path.exists(temp_res_extracted_dir):
+                shutil.rmtree(temp_res_extracted_dir)
+                print temp_res_extracted_dir + " deleted"
+        return JsonResponse(map_dict)
