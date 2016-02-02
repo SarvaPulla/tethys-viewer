@@ -10,7 +10,7 @@ app_class = 'hydroshare_shapefile_viewer.app:HydroshareShapefileViewer'
 app_package_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'tethysapp', app_package)
 
 ### Python Dependencies ###
-dependencies = []
+dependencies = ['hs-restclient']
 
 setup(
     name=release_package,
