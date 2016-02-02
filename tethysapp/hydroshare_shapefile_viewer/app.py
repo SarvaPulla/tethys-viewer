@@ -12,6 +12,7 @@ class HydroshareShapefileViewer(TethysAppBase):
     package = 'hydroshare_shapefile_viewer'
     root_url = 'hydroshare-shapefile-viewer'
     color = '#2ecc71'
+    description = 'View geographic feature files (shapefiles) that are stored in HydroShare.'
         
     def url_maps(self):
         """
