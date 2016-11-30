@@ -1,20 +1,26 @@
-from django.shortcuts import render
-from django.http import Http404
-import urllib2
-from tethys_dataset_services.engines import GeoServerSpatialDatasetEngine
+import tempfile
+import shutil
+import os
+import logging
 import zipfile
-from oauthlib.oauth2 import TokenExpiredError
-from hs_restclient import HydroShare, HydroShareAuthOAuth2, HydroShareNotAuthorized, HydroShareNotFound
+
+from django.shortcuts import render
 from django.core.exceptions import ObjectDoesNotExist
 from django.contrib.auth.decorators import login_required
 from django.conf import settings
 from django.http import JsonResponse
 
-import tempfile
-import shutil
-import os
-from django.contrib.sites.shortcuts import get_current_site
+from oauthlib.oauth2 import TokenExpiredError
+from hs_restclient import HydroShare, HydroShareAuthOAuth2, HydroShareNotAuthorized, HydroShareNotFound
 from utilities import *
+
+logger = logging.getLogger(__name__)
+try:
+    from tethys_services.backends.hs_restclient_helper import get_oauth_hs
+except ImportError:
+    logger.error("could not load: tethys_services.backends.hs_restclient_helper import get_oauth_hs")
+
+geoserver_workspace_name = "geo_feature_viewer"
 
 ###########
 geosvr_url_base = getattr(settings, "GEOSERVER_URL_BASE", "http://127.0.0.1:8181")
@@ -25,18 +31,17 @@ hs_instance_name = "www"
 target_res_type = "geographicfeatureresource"
 
 hs_hostname = "{0}.hydroshare.org".format(hs_instance_name)
-wsName = hs_hostname
 
 ###########
 popup_title_WELCOME = "Welcome to the HydroShare Geographic Feature Viewer"
 popup_title_ERROR = "Error"
 popup_title_WARNING = "Warning"
 
-popup_content_NOT_LAUNCHED_FROM_HYDROSHARE = "This app should be launched from <a href='https://{0}.hydroshare.org/my-resources/'>HydroShare</a>.".format(hs_instance_name)
+popup_content_NOT_LAUNCHED_FROM_HYDROSHARE = "This app should be launched from <a href='https://www.hydroshare.org/my-resources/'>HydroShare</a>."
 popup_content_UNKNOWN_ERROR = "Sorry, we are having an internal error!"
 popup_content_NO_PERMISSION = "Sorry, you have no permission on this resource."
 popup_content_NOT_FOUND = "Sorry, we cannot find this resource on HydroShare."
-popup_content_ANONYMOUS_USER = "Please <a href='https://{0}.hydroshare.org/accounts/login/'>sign in HydroShare</a> and then launch this app again.".format(hs_instance_name)
+popup_content_ANONYMOUS_USER = "Please <a href='https://www.hydroshare.org/accounts/login/'>sign in HydroShare</a> and then launch this app again."
 popup_content_TOKEN_EXPIRED = "Login timed out! Please <a href='/oauth2/login/hydroshare'>sign in with your HydroShare account</a> again."
 popup_content_NOT_OAUTH_LOGIN = "Please sign out and re-sign in with your HydroShare account."
 popup_content_NOT_GEOG_FEATURE_RESOURCE = "Sorry, this resource is not a HydroShare Geographic Feature Resource."
@@ -108,8 +113,10 @@ def home(request):
                 # res_id = "a4a4bca8369e4c1e88a1b35b9487e731"
                 # request.session['res_id'] = res_id
 
-                hs = getOAuthHS(request)
-                res_landing_page = "https://{0}.hydroshare.org/resource/{1}/".format(hs_instance_name, res_id)
+                hs = get_oauth_hs(request)
+                global hs_hostname
+                hs_hostname = hs.hostname
+
                 resource_md = hs.getSystemMetadata(res_id)
                 resource_type = resource_md.get("resource_type", "")
                 resource_title = resource_md.get("resource_title", "")
@@ -118,33 +125,33 @@ def home(request):
                     popup_title = popup_title_ERROR
                     popup_content = popup_content_NOT_GEOG_FEATURE_RESOURCE
                     success_flag = "false"
-                    print resource_type.lower()
-                    #raise Http404("Not RasterResource")
+                    logger.debug(resource_type.lower())
+
             except ObjectDoesNotExist as e:
-                print str(e)
+                logger.exception(e.message)
                 popup_title = popup_title_ERROR
                 popup_content = popup_content_NOT_OAUTH_LOGIN
                 success_flag = "false"
             except TokenExpiredError as e:
-                print str(e)
+                logger.exception(e.message)
                 popup_title = popup_title_WARNING
                 popup_content = popup_content_TOKEN_EXPIRED
                 success_flag = "false"
-                # raise Http404("Token Expired")
+
             except HydroShareNotAuthorized as e:
-                print str(e)
+                logger.exception (e.message)
                 popup_title = popup_title_ERROR
                 popup_content = popup_content_NO_PERMISSION
                 success_flag = "false"
-                # raise Http404("Your have no permission on this resource")
+
             except HydroShareNotFound as e:
-                print str(e)
+                logger.exception(e.message)
                 popup_title = popup_title_ERROR
                 popup_content = popup_content_NOT_FOUND
                 success_flag = "false"
             except Exception as e:
-                print "unknown error"
-                print str(e)
+                logger.error("unknown error")
+                logger.exception(e.message)
                 popup_title = popup_title_ERROR
                 popup_content = popup_content_UNKNOWN_ERROR
                 success_flag = "false"
@@ -160,19 +167,6 @@ def home(request):
 
     return render(request, 'hydroshare_shapefile_viewer/home.html', context)
 
-
-def getOAuthHS(request):
-
-    client_id = getattr(settings, "SOCIAL_AUTH_HYDROSHARE_KEY", None)
-    client_secret = getattr(settings, "SOCIAL_AUTH_HYDROSHARE_SECRET", None)
-
-    # this line will throw out from django.core.exceptions.ObjectDoesNotExist if current user is not signed in via HydroShare OAuth
-    token = request.user.social_auth.get(provider='hydroshare').extra_data['token_dict']
-
-    auth = HydroShareAuthOAuth2(client_id, client_secret, token=token)
-    hs = HydroShare(auth=auth, hostname=hs_hostname)
-    return hs
-
 def draw_geog_feature(request):
 
     res_id = request.session.get("res_id", None)
@@ -180,32 +174,33 @@ def draw_geog_feature(request):
     temp_dir = None
     map_dict = {}
     map_dict["success"] = False
-    band_stat_info_array = []
 
     try:
         if res_id is not None:
 
-            map_dict = getMapParas(geosvr_url_base=geosvr_url_base, wsName=wsName, store_id=res_id, \
+            map_dict = getMapParas(geosvr_url_base=geosvr_url_base, wsName=geoserver_workspace_name, store_id=res_id, \
                         layerName=res_id, un=geosvr_user, pw=geosvr_pw)
 
             if map_dict["success"]: # find cached raster
-               print "find cached layer on geoserver"
+               logger.debug("find cached layer on geoserver")
 
             else: # no cached raster or raster has no projection
 
-                hs = getOAuthHS(request)
-                print ("Begin download res: {0}".format(res_id))
+                hs = get_oauth_hs(request)
+                global hs_hostname
+                hs_hostname = hs.hostname
+                logger.debug("Begin download res: {0}".format(res_id))
                 hs.getResource(res_id, destination=extract_base_path, unzip=True)
-                print ("End download res")
+                logger.debug ("End download res")
                 temp_res_extracted_dir = extract_base_path + '/' + res_id
-                print temp_res_extracted_dir
+                logger.debug(temp_res_extracted_dir)
                 contents_folder = extract_base_path + '/' + res_id + '/' + res_id +'/data/contents/'
-                print contents_folder
+                logger.debug(contents_folder)
                 file_list = os.listdir(contents_folder)
 
 
                 for fn in file_list:
-                    print fn
+                    logger.debug(fn)
 
                 temp_dir = tempfile.mkdtemp()
                 zip_file_full_path = temp_dir + "/" + "zip_shapefile.zip"
@@ -217,14 +212,14 @@ def draw_geog_feature(request):
                         myzip.write(shapefile_fp, arcname=new_file_name)
 
 
-                rslt = addZippedShapefile2Geoserver(geosvr_url_base=geosvr_url_base, uname=geosvr_user, upwd=geosvr_pw, ws_name=wsName, \
-                                              store_name=res_id, zippedTif_full_path=zip_file_full_path, res_url=hs_hostname + "/"  + target_res_type)
+                rslt = addZippedShapefile2Geoserver(geosvr_url_base=geosvr_url_base, uname=geosvr_user, upwd=geosvr_pw, ws_name=geoserver_workspace_name, \
+                                              store_name=res_id, zippedTif_full_path=zip_file_full_path, res_url='appsdev.hydroshare.org/apps/hydroshare-shapefile-viewer')
                 if(rslt):
-                    map_dict = getMapParas(geosvr_url_base=geosvr_url_base, wsName=wsName, store_id=res_id, \
+                    map_dict = getMapParas(geosvr_url_base=geosvr_url_base, wsName=geoserver_workspace_name, store_id=res_id, \
                                                    layerName=res_id, un=geosvr_user, pw=geosvr_pw)
 
             map_dict['geosvr_url_base'] = geosvr_url_base
-            map_dict['ws_name'] = wsName
+            map_dict['ws_name'] = geoserver_workspace_name
             map_dict['store_name'] = res_id
             map_dict['layer_name'] = res_id
             if map_dict["success"] == False:
@@ -238,38 +233,38 @@ def draw_geog_feature(request):
 
 
     except ObjectDoesNotExist as e:
-        print str(e)
+        logger.exception(e.message)
         popup_title = popup_title_ERROR
         popup_content = popup_content_NOT_OAUTH_LOGIN
         map_dict["success"] = False
         map_dict['popup_title'] = popup_title
         map_dict['popup_content'] = popup_content
     except TokenExpiredError as e:
-        print str(e)
+        logger.exception(e.message)
         popup_title = popup_title_WARNING
         popup_content = popup_content_TOKEN_EXPIRED
         map_dict["success"] = False
         map_dict['popup_title'] = popup_title
         map_dict['popup_content'] = popup_content
-        # raise Http404("Token Expired")
+
     except HydroShareNotAuthorized as e:
-        print str(e)
+        logger.exception(e.message)
         popup_title = popup_title_ERROR
         popup_content = popup_content_NO_PERMISSION
         map_dict["success"] = False
         map_dict['popup_title'] = popup_title
         map_dict['popup_content'] = popup_content
-        # raise Http404("Your have no permission on this resource")
+
     except HydroShareNotFound as e:
-        print str(e)
+        logger.exception(e.message)
         popup_title = popup_title_ERROR
         popup_content = popup_content_NOT_FOUND
         map_dict["success"] = False
         map_dict['popup_title'] = popup_title
         map_dict['popup_content'] = popup_content
     except Exception as e:
-        print "unknown error"
-        print str(e)
+        logger.error ("unknown error")
+        logger.exception(e.message)
         popup_title = popup_title_ERROR
         popup_content = popup_content_UNKNOWN_ERROR
         map_dict["success"] = False
@@ -280,9 +275,9 @@ def draw_geog_feature(request):
         if temp_dir is not None:
             if os.path.exists(temp_dir):
                 shutil.rmtree(temp_dir)
-                print temp_dir + " deleted"
+                logger.debug (temp_dir + " deleted")
         if temp_res_extracted_dir is not None:
             if os.path.exists(temp_res_extracted_dir):
                 shutil.rmtree(temp_res_extracted_dir)
-                print temp_res_extracted_dir + " deleted"
+                logger.debug(temp_res_extracted_dir + " deleted")
         return JsonResponse(map_dict)
