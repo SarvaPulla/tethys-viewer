@@ -41,6 +41,10 @@
 
 
 {% block app_navigation_items %}
+
+
+   <a href="/oauth2/login/hydroshare/?next=/apps/hydroshare-shapefile-viewer/login-callback/" onclick="window.open(this.href, 'windowName', 'width=1000, height=700, left=24, top=24, scrollbars, resizable'); return false;">Link</a>
+
     <button type="button" class="btn btn-default" data-toggle="modal" data-target="#welcome-popup">Instructions</button>
     <a class="btn btn-default" href="https://github.com/SarvaPulla/tethys-viewer" target="_blank">More Info</a>
     <br>

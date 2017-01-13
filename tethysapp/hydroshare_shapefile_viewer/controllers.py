@@ -76,7 +76,7 @@ extract_base_path = '/tmp'
 # 1)Zip file name 'zipFile.zip' does not matter.But the embed tif file name (without extension) 'geotiffwill' be used for Layer Name.
 # 2)Store name 'store' should be unique in one workspace. Ex. same store names with different zipfile or geotif cannot cannot be used for creating new layer resource
 
-@login_required()
+
 def home(request):
 
     # import sys
@@ -84,7 +84,7 @@ def home(request):
     # import pydevd
     # pydevd.settrace('172.17.42.1', port=21000, suspend=False)
 
-
+    print "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
     popup_title = popup_title_WELCOME
     popup_content = popup_content_NOT_LAUNCHED_FROM_HYDROSHARE
     success_flag = "true"
@@ -281,3 +281,15 @@ def draw_geog_feature(request):
                 shutil.rmtree(temp_res_extracted_dir)
                 logger.debug(temp_res_extracted_dir + " deleted")
         return JsonResponse(map_dict)
+
+
+
+def login_callback(request):
+
+    context = {}
+    if request.user.is_authenticated():
+        context["login"] = "yes"
+    else:
+        context["login"] = "no"
+
+    return render(request, 'hydroshare_shapefile_viewer/login_callback.html', context)

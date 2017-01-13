@@ -27,7 +27,11 @@ class HydroshareShapefileViewer(TethysAppBase):
                     UrlMap(name='draw_geog_feature',
                            url='draw-geog-feature',
                            controller='hydroshare_shapefile_viewer.controllers.draw_geog_feature'),
+                    UrlMap(name='login_callback',
+                           url='login-callback',
+                           controller='hydroshare_shapefile_viewer.controllers.login_callback'),
                     )
+
 
 
 
